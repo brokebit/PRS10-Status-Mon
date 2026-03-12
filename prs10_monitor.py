@@ -98,7 +98,7 @@ STATUS_BYTES = [
 
 def _query(port: serial.Serial, cmd: str) -> str:
     port.write((cmd + "\r").encode())
-    return port.readline().decode(errors="replace").strip()
+    return port.read_until(b"\r").decode(errors="replace").strip()
 
 
 def collect_data(port: serial.Serial, lock: threading.Lock) -> dict:
