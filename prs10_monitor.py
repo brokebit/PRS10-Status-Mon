@@ -179,7 +179,14 @@ class StatusPanel(Static):
         for (label, desc, bits), val in zip(STATUS_BYTES, values):
             set_bits = [bits[i] for i in range(8) if (val >> i) & 1 and bits[i]]
             byte_hex = f"0x{val:02X}"
-            if set_bits:
+
+            # ST5 bit 2 (0x04) = "1pps PLL active" is a good condition
+            if label == "ST5" and val == 0x04:
+                lines.append(
+                    f"[bold green]{label}[/]  [dim]{desc:<26}[/]  {byte_hex}"
+                    f"  [green]✓ PLL active[/]"
+                )
+            elif set_bits:
                 lines.append(
                     f"[bold yellow]{label}[/]  [dim]{desc:<26}[/]  {byte_hex}"
                 )
