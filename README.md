@@ -2,6 +2,8 @@
 
 A terminal UI for monitoring a [Stanford Research Systems PRS10](https://www.thinksrs.com/products/prs10.html) Rubidium Frequency Standard over RS-232.
 
+![PRS10 Monitor TUI](TUI-Example.jpg)
+
 ## Features
 
 - Live Rb lock status indicator (green / red)
