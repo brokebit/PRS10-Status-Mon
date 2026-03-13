@@ -96,3 +96,7 @@ prs10_monitor.py   Main script
 requirements.txt   Python dependencies
 PRS10m.pdf         Stanford Research Systems RS-232 instruction set manual
 ```
+
+## Disclaimers
+- This project is not affiliated with or endorsed by Stanford Research Systems.
+- Most code created by Claude Opus 4.5 with some contrinutions from me. 
