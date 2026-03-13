@@ -94,6 +94,33 @@ STATUS_BYTES = [
     ("ST6", "System Events",            ST6_BITS),
 ]
 
+# ── Analog channel definitions ────────────────────────────────────────────────
+# Format: (channel, name, scale_factor, unit, description)
+# scale_factor: multiply raw voltage by this to get actual value
+
+AD_CHANNELS = [
+    (0,  "Spare",         1,    "V",  "Spare (J204)"),
+    (1,  "+24V Heater",   10,   "V",  "Heater supply"),
+    (2,  "+24V Elec",     10,   "V",  "Electronics supply"),
+    (3,  "Lamp Drain",    10,   "V",  "Lamp FET drain"),
+    (4,  "Lamp Gate",     10,   "V",  "Lamp FET gate"),
+    (5,  "Crystal Htr",   1,    "V",  "Crystal heater control"),
+    (6,  "Cell Htr",      1,    "V",  "Cell heater control"),
+    (7,  "Lamp Htr",      1,    "V",  "Lamp heater control"),
+    (8,  "Photosig AC",   1,    "V",  "Amplified AC photosignal"),
+    (9,  "Photocell",     4,    "V",  "Photocell I/V converter"),
+    (10, "Case Temp",     100,  "°C", "Case temperature"),
+    (11, "Crystal Thm",   1,    "V",  "Crystal thermistor"),
+    (12, "Cell Thm",      1,    "V",  "Cell thermistor"),
+    (13, "Lamp Thm",      1,    "V",  "Lamp thermistor"),
+    (14, "Freq Cal",      1,    "V",  "Freq cal pot / ext cal"),
+    (15, "Analog GND",    1,    "V",  "Analog ground ref"),
+    (16, "VCXO Var",      4,    "V",  "22.48 MHz VCXO varactor"),
+    (17, "VCO Var",       4,    "V",  "360 MHz VCO varactor"),
+    (18, "Mult Gain",     4,    "V",  "Freq mult gain ctrl"),
+    (19, "RF Lock",       1,    "V",  "RF synth lock (~4.8V=OK)"),
+]
+
 # ── Serial helpers ─────────────────────────────────────────────────────────────
 
 def _query(port: serial.Serial, cmd: str) -> str:
@@ -105,11 +132,13 @@ def collect_data(port: serial.Serial, lock: threading.Lock) -> dict:
     data: dict = {}
     try:
         with lock:
-            data["lo"]   = _query(port, "LO?")
-            data["fc"]   = _query(port, "FC?")
-            data["ad10"] = _query(port, "AD10?")
-            data["ds"]   = _query(port, "DS?")
-            data["st"]   = _query(port, "ST?")
+            data["lo"] = _query(port, "LO?")
+            data["fc"] = _query(port, "FC?")
+            data["ds"] = _query(port, "DS?")
+            data["st"] = _query(port, "ST?")
+            # Query all analog channels (AD0-AD19)
+            for ch, name, scale, unit, desc in AD_CHANNELS:
+                data[f"ad{ch}"] = _query(port, f"AD{ch}?")
     except serial.SerialException as exc:
         data["error"] = str(exc)
     data["time"] = time.strftime("%H:%M:%S")
@@ -143,17 +172,10 @@ class LockIndicator(Static):
 
 
 class MetricsPanel(Static):
-    """Key analog readings."""
+    """Key readings summary."""
 
     def refresh_data(self, data: dict) -> None:
         rows: list[str] = []
-
-        ad10 = data.get("ad10")
-        if ad10:
-            try:
-                rows.append(f"[bold]Case Temp  [/] {float(ad10) * 100:.1f} °C")
-            except ValueError:
-                rows.append(f"[bold]Case Temp  [/] {ad10} V (raw)")
 
         fc = data.get("fc")
         if fc:
@@ -167,6 +189,51 @@ class MetricsPanel(Static):
         self.update("\n".join(rows))
 
 
+class AnalogPanel(Static):
+    """All analog channel readings."""
+
+    def refresh_data(self, data: dict) -> None:
+        lines: list[str] = []
+
+        # Group channels for better organization
+        groups = [
+            ("Power Supplies", [1, 2]),
+            ("Lamp", [3, 4, 7, 13]),
+            ("Temperatures", [10, 5, 11, 6, 12]),
+            ("Photosignal", [8, 9]),
+            ("RF Synth", [16, 17, 18, 19]),
+            ("Calibration", [14, 15, 0]),
+        ]
+
+        for group_name, channels in groups:
+            lines.append(f"[bold cyan]{group_name}[/]")
+            for ch in channels:
+                # Find channel definition
+                ch_def = next((c for c in AD_CHANNELS if c[0] == ch), None)
+                if not ch_def:
+                    continue
+                _, name, scale, unit, desc = ch_def
+                raw = data.get(f"ad{ch}")
+                if raw:
+                    try:
+                        val = float(raw) * scale
+                        # Format based on unit type
+                        if unit == "°C":
+                            val_str = f"{val:5.1f} {unit}"
+                        elif unit == "V" and scale > 1:
+                            val_str = f"{val:5.1f} {unit}"
+                        else:
+                            val_str = f"{val:5.3f} {unit}"
+                        lines.append(f"  {name:<12} {val_str}")
+                    except ValueError:
+                        lines.append(f"  {name:<12} [red]ERR[/]")
+                else:
+                    lines.append(f"  {name:<12} [dim]--[/]")
+            lines.append("")  # Blank line between groups
+
+        self.update("\n".join(lines).rstrip())
+
+
 class StatusPanel(Static):
     """Six status bytes with flag descriptions."""
 
@@ -177,26 +244,59 @@ class StatusPanel(Static):
 
         lines: list[str] = []
         for (label, desc, bits), val in zip(STATUS_BYTES, values):
-            set_bits = [bits[i] for i in range(8) if (val >> i) & 1 and bits[i]]
             byte_hex = f"0x{val:02X}"
 
-            # ST5 bit 2 (0x04) = "1pps PLL active" is a good condition
-            if label == "ST5" and val == 0x04:
-                lines.append(
-                    f"[bold green]{label}[/]  [dim]{desc:<26}[/]  {byte_hex}"
-                    f"  [green]✓ PLL active[/]"
-                )
-            elif set_bits:
-                lines.append(
-                    f"[bold yellow]{label}[/]  [dim]{desc:<26}[/]  {byte_hex}"
-                )
-                for b in set_bits:
-                    lines.append(f"     [red]⚑[/]  {b}")
+            # ST5 special handling: bit 2 (PLL active) is GOOD, not an error
+            if label == "ST5":
+                pll_active = (val >> 2) & 1  # bit 2
+                # Error bits are 0, 3, 4, 5, 6, 7 (exclude bit 1 which is informational)
+                error_bits = [bits[i] for i in [0, 3, 4, 5, 6, 7] if (val >> i) & 1 and bits[i]]
+                info_bits = [bits[1]] if (val >> 1) & 1 and bits[1] else []
+
+                if error_bits:
+                    # Has errors - show yellow with flags
+                    lines.append(
+                        f"[bold yellow]{label}[/]  [dim]{desc:<26}[/]  {byte_hex}"
+                    )
+                    if pll_active:
+                        lines.append(f"     [green]✓[/]  PLL active")
+                    for b in error_bits:
+                        lines.append(f"     [red]⚑[/]  {b}")
+                    for b in info_bits:
+                        lines.append(f"     [dim]○[/]  {b}")
+                elif pll_active:
+                    # PLL active, no errors - green
+                    lines.append(
+                        f"[bold green]{label}[/]  [dim]{desc:<26}[/]  {byte_hex}"
+                        f"  [green]✓ PLL active[/]"
+                    )
+                elif val == 0:
+                    # No PLL, no errors (1pps not in use)
+                    lines.append(
+                        f"[bold green]{label}[/]  [dim]{desc:<26}[/]  {byte_hex}"
+                        f"  [green]✓ OK[/]"
+                    )
+                else:
+                    # Only informational bits set
+                    lines.append(
+                        f"[bold yellow]{label}[/]  [dim]{desc:<26}[/]  {byte_hex}"
+                    )
+                    for b in info_bits:
+                        lines.append(f"     [dim]○[/]  {b}")
             else:
-                lines.append(
-                    f"[bold green]{label}[/]  [dim]{desc:<26}[/]  {byte_hex}"
-                    f"  [green]✓ OK[/]"
-                )
+                # Standard handling for other status bytes
+                set_bits = [bits[i] for i in range(8) if (val >> i) & 1 and bits[i]]
+                if set_bits:
+                    lines.append(
+                        f"[bold yellow]{label}[/]  [dim]{desc:<26}[/]  {byte_hex}"
+                    )
+                    for b in set_bits:
+                        lines.append(f"     [red]⚑[/]  {b}")
+                else:
+                    lines.append(
+                        f"[bold green]{label}[/]  [dim]{desc:<26}[/]  {byte_hex}"
+                        f"  [green]✓ OK[/]"
+                    )
         self.update("\n".join(lines))
 
 # ── App ────────────────────────────────────────────────────────────────────────
@@ -211,7 +311,7 @@ Header {
 }
 
 #left {
-    width: 36;
+    width: 38;
     padding: 1 1 1 1;
 }
 
@@ -247,6 +347,20 @@ MetricsPanel {
     height: auto;
     border: round $primary;
     padding: 0 1;
+    margin-bottom: 1;
+}
+
+#analog-heading {
+    text-style: bold;
+    padding: 0 0 0 0;
+    color: $text-muted;
+}
+
+AnalogPanel {
+    height: 1fr;
+    border: round $primary;
+    padding: 0 1;
+    overflow-y: auto;
 }
 
 #status-heading {
@@ -286,6 +400,8 @@ class PRS10App(App):
             with Vertical(id="left"):
                 yield LockIndicator("? UNKNOWN", id="lock")
                 yield MetricsPanel("Connecting…", id="metrics")
+                yield Static("[bold]Analog Channels[/]", id="analog-heading")
+                yield AnalogPanel("Connecting…", id="analog")
             with Vertical(id="right"):
                 yield Static("[bold]Status Bytes[/]", id="status-heading")
                 yield StatusPanel("Connecting…", id="status")
@@ -346,6 +462,7 @@ class PRS10App(App):
             True if lo == "1" else (False if lo == "0" else None)
         )
         self.query_one("#metrics", MetricsPanel).refresh_data(data)
+        self.query_one("#analog", AnalogPanel).refresh_data(data)
 
         st_raw = data.get("st")
         values = parse_status(st_raw) if st_raw else None
